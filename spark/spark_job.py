@@ -1,15 +1,51 @@
+import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, avg
+from pyspark.sql import functions as F
 
-spark = SparkSession.builder.appName("BitcoinETL").getOrCreate()
+spark = (
+    SparkSession.builder
+    .appName(os.getenv("SPARK_APP_NAME", "BitcoinETL"))
+    .getOrCreate()
+)
 
-df = spark.read.csv("/data/bitcoin_sample.csv", header=True, inferSchema=True)
-df = df.withColumn("Date", to_date(col("Date")))
-daily_avg = df.groupBy("Date").agg(avg(col("Close")).alias("avg_close"))
+broker = os.getenv("KAFKA_BROKER", "redpanda:9092")
+topic  = os.getenv("KAFKA_TOPIC", "bitcoin")
 
-jdbc_url = "jdbc:postgresql://postgres:5432/bitcoin"
-props = {"user": "user", "password": "password", "driver": "org.postgresql.Driver"}
-daily_avg.write.mode("overwrite").jdbc(jdbc_url, "daily_avg", properties=props)
+# --- 1) Kafka lesen (einmaliger Batch-Read via startingOffsets=earliest) ---
+raw = (
+    spark.read
+    .format("kafka")
+    .option("kafka.bootstrap.servers", broker)
+    .option("subscribe", topic)
+    .option("startingOffsets", "earliest")
+    .load()
+)
 
-print("Wrote rows:", daily_avg.count())
+# value ist binär → in String wandeln und parsen: "YYYY-MM-DD,Close"
+df = raw.select(F.col("value").cast("string").alias("line"))
+df = df.select(
+    F.to_date(F.split("line", ",").getItem(0), "yyyy-MM-dd").alias("date"),
+    F.split("line", ",").getItem(1).cast("double").alias("close")
+).dropna()
+
+daily = (
+    df.groupBy("date")
+      .agg(F.avg("close").alias("avg_close"))
+      .orderBy("date")
+)
+
+# --- 2) In Postgres schreiben ---
+pg_url = f"jdbc:postgresql://{os.getenv('POSTGRES_HOST','postgres')}:{os.getenv('POSTGRES_PORT','5432')}/{os.getenv('POSTGRES_DB','bitcoin')}"
+props = {
+    "driver": "org.postgresql.Driver",
+    "user": os.getenv("POSTGRES_USER", "user"),
+    "password": os.getenv("POSTGRES_PASSWORD", "pass"),
+}
+
+(daily
+ .write
+ .mode("append")
+ .jdbc(pg_url, "daily_avg", properties=props)
+)
+
 spark.stop()
