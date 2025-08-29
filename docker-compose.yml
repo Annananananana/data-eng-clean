@@ -3,18 +3,14 @@ services:
     image: postgres:16
     container_name: postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-bitcoin}
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pass}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+    restart: unless-stopped
 
   redpanda:
     image: redpandadata/redpanda:v24.1.9
@@ -27,46 +23,50 @@ services:
       --reserve-memory 0M
       --node-id 0
       --check=false
+      --kafka-addr PLAINTEXT://0.0.0.0:9092
+      --advertise-kafka-addr PLAINTEXT://redpanda:9092
     ports:
       - "9092:9092"
-      - "9644:9644"   # Admin API
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "rpk cluster info -X brokers=localhost:9092 || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+      - "9644:9644"
+    restart: unless-stopped
 
   producer:
     build: ./producer
-    depends_on:
-      redpanda:
-        condition: service_healthy
     environment:
-      KAFKA_BROKER: ${KAFKA_BROKER}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_BROKER: ${KAFKA_BROKER:-redpanda:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-bitcoin}
     volumes:
       - ./data:/app/data:ro
-    command: ["python", "producer.py", "/app/data/bitcoin_sample.csv"]
+    # ENTRYPOINT in Dockerfile ist schon ["python","producer.py"].
+    # Deshalb hier NUR der CSV-Pfad als command:
+    command: ["/app/data/bitcoin_sample.csv"]
+    depends_on:
+      - redpanda
 
   spark:
     image: bitnami/spark:3.5
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_started
-    environment:
-      SPARK_MODE: client
-      SPARK_SUBMIT_ARGS: "--packages org.postgresql:postgresql:42.7.3,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0"
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: ${POSTGRES_PORT}
-      KAFKA_BROKER: ${KAFKA_BROKER}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      SPARK_APP_NAME: ${SPARK_APP_NAME}
     volumes:
       - ./spark:/opt/spark-apps
       - ./data:/app/data:ro
-    command: ["spark-submit", "/opt/spark-apps/spark_job.py"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bitcoin}
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pass}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      KAFKA_BROKER: ${KAFKA_BROKER:-redpanda:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-bitcoin}
+      SPARK_APP_NAME: ${SPARK_APP_NAME:-BitcoinETL}
+      # Wichtig: PySpark-Interpreter im Bitnami-Image:
+      PYSPARK_PYTHON: /opt/bitnami/python/bin/python3
+      PYSPARK_DRIVER_PYTHON: /opt/bitnami/python/bin/python3
+    depends_on:
+      - postgres
+      - redpanda
+    command: >
+      bash -lc "/opt/bitnami/spark/bin/spark-submit
+      --conf spark.pyspark.python=/opt/bitnami/python/bin/python3
+      --conf spark.pyspark.driver.python=/opt/bitnami/python/bin/python3
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.7.3
+      /opt/spark-apps/spark_job.py"
+
