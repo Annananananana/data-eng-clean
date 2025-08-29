@@ -1,0 +1,43 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092,INTERNAL://redpanda:29092
+    ports:
+      - "9092:9092"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: bitcoin
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  spark:
+    image: bitnami/spark:3.5
+    container_name: spark
+    volumes:
+      - ./spark:/opt/spark-apps
+      - ./data:/data
+    command: >
+      spark-submit
+      --packages org.postgresql:postgresql:42.7.3
+      /opt/spark-apps/spark_job.py
+    depends_on:
+      - redpanda
+      - postgres
+    restart: "no"
