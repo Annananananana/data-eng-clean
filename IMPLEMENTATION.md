@@ -38,6 +38,11 @@ Spark konsumiert die Daten, berechnet Tagesdurchschnitte und schreibt die Ergebn
 
 ---
 
+**Hinweis:** Zusätzlich zum ursprünglichen Konzept wurde in der Umsetzung **Redpanda** (Kafka-kompatibel) sowie ein kleiner **Python Producer** verwendet.  
+Dies war notwendig, um die ETL-Pipeline mit Streaming-Daten zu versorgen und die Kommunikation mit Spark lokal zu validieren, auch wenn dieser Aspekt im ursprünglichen Konzept nicht explizit enthalten war.
+
+---
+
 ## Screenshot (Beispiel Docker Setup / Spark Job)
 👉 Hier Screenshot einfügen (`/docs/images/etl_pipeline.png` oder direkt aus VS Code/PebblePad):
 
